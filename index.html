@@ -505,9 +505,6 @@ textarea::placeholder{color:var(--dim);letter-spacing:.04em}
 .mini-call .hang-mini:hover{background:rgba(255,255,255,.24)}
 .mini-call .hang-mini:active{transform:scale(.9)}
 
-/* ============================================================
-   迷你音乐播放条
-   ============================================================ */
 .mini-player{
   position:absolute;
   left:12px;right:12px;
@@ -1388,7 +1385,7 @@ const isChatActive = () => {
 };
 
 /* ============================================================
-   外观设置模块（字体 + 气泡可视化 + 气泡 CSS）
+   外观设置模块
    ============================================================ */
 const APPEARANCE_KEY = 'whisper-appearance-v1';
 
@@ -1604,7 +1601,6 @@ function applyAppearance(){
 
 function applyFont(){ applyAppearance(); }
 
-/* ===== 字体设置面板 ===== */
 function openFontSetting(){
   if(!appearance) appearance = loadAppearance();
   const curFF = appearance.fontFamily || '';
@@ -1720,7 +1716,6 @@ function openFontSetting(){
   });
 }
 
-/* ===== 气泡设置面板（可视化 / CSS 双模式） ===== */
 function openBubbleSetting(){
   if(!appearance) appearance = loadAppearance();
 
@@ -2023,7 +2018,6 @@ function openBubbleSetting(){
   }
 }
 
-/* 颜色转 hex */
 function toHex(color, fallback){
   if(!color) return fallback || '#000000';
   color = String(color).trim();
@@ -2144,7 +2138,10 @@ const DEFAULT_GRID_ICONS = [
   { id:'mail',     label:'信箱', ico:'✉️' },
   { id:'games',    label:'小游戏', ico:'🎮' }
 ];
+
+/* ★ 新增 activeChat：TA 主动找你聊天 */
 const DEFAULT_FREQ = {
+  activeChat:  { enabled: true, minMin: 30,  maxMin: 180 },
   replyMail:   { enabled: true, minMin: 10,  maxMin: 30 },
   momentsPost: { enabled: true, minMin: 60,  maxMin: 240 },
   diaryPost:   { enabled: true, minMin: 240, maxMin: 480 },
@@ -2250,7 +2247,6 @@ function mergeFreqSettings(settings){
   return out;
 }
 
-/* ================= 迁移 ================= */
 function migrate(s){
   const base = freshState();
   const d = Object.assign({}, base, s || {});
@@ -2353,7 +2349,6 @@ function curMsgs(){
   }
 }
 
-/* ================= 启动 ================= */
 async function boot(){
   appearance = loadAppearance();
   applyAppearance();
@@ -2489,17 +2484,97 @@ const RENDERERS = {};
 /* ================= 主 UI ================= */
 function startUI(){
 
+  /* ============================================================
+     ★ 后台通知系统（统一 tag + 未读计数 + 点击跳转聊天）
+     ============================================================ */
+  let _unreadBadge = 0;
+  let _lastNotifTime = 0;
+
   function requestNotifPermission(){
-    try{ if(!('Notification' in window)) return; if(Notification.permission === 'default'){ const r = Notification.requestPermission(); if(r && r.catch) r.catch(()=>{}); } }catch(e){}
+    try{
+      if(!('Notification' in window)) return;
+      if(Notification.permission === 'default'){
+        const r = Notification.requestPermission();
+        if(r && r.catch) r.catch(()=>{});
+      }
+    }catch(e){}
   }
+
   function sendNotification(title, body){
     try{
       if(!('Notification' in window)) return;
       if(Notification.permission !== 'granted') return;
-      const n = new Notification(title, { body: String(body||'').slice(0,100), tag: 'whisper-'+Date.now(), renotify: true, silent: false });
-      n.onclick = function(){ try{ window.focus(); }catch(e){} try{ n.close(); }catch(e){} try{ switchTab('chat'); }catch(e){} };
-      setTimeout(()=>{ try{ n.close(); }catch(e){} }, 9000);
-    }catch(e){}
+      if(!document.hidden) return; // 前台不弹
+
+      _unreadBadge++;
+
+      let displayBody = String(body || '').slice(0, 100);
+      if(_unreadBadge > 1){
+        displayBody = `[${_unreadBadge} 条新消息] ` + displayBody;
+      }
+
+      const n = new Notification(title, {
+        body: displayBody,
+        tag: 'whisper-msg',    // 同 tag 会替换，避免堆积
+        renotify: true,
+        silent: false,
+        requireInteraction: false
+      });
+
+      n.onclick = function(){
+        try{ window.focus(); }catch(e){}
+        try{ n.close(); }catch(e){}
+        _unreadBadge = 0;
+        // 延迟一点，确保 window.focus 生效
+        setTimeout(()=>{
+          try{ switchTab('chat'); }catch(e){}
+          try{ renderChat(); }catch(e){}
+          try{ $('#input') && $('#input').focus(); }catch(e){}
+        }, 150);
+      };
+
+      // 12 秒后自动关闭
+      setTimeout(()=>{
+        try{ n.close(); }catch(e){}
+      }, 12000);
+
+      _lastNotifTime = Date.now();
+    }catch(e){
+      console.warn('sendNotification 失败:', e);
+    }
+  }
+
+  /* 测试通知 */
+  function testNotification(){
+    if(!('Notification' in window)){ toast('当前浏览器不支持通知'); return; }
+    if(Notification.permission !== 'granted'){
+      requestNotifPermission();
+      setTimeout(()=>{
+        if(Notification.permission === 'granted') testNotification();
+        else toast('请先在浏览器允许通知');
+      }, 500);
+      return;
+    }
+    try{
+      const n = new Notification('💌 通知测试', {
+        body: '这是一条测试通知。点击它可以回到聊天界面。',
+        tag: 'whisper-test-' + Date.now(),
+        renotify: true,
+        silent: false
+      });
+      n.onclick = function(){
+        try{ window.focus(); }catch(e){}
+        try{ n.close(); }catch(e){}
+        setTimeout(()=>{
+          try{ switchTab('chat'); }catch(e){}
+          try{ renderChat(); }catch(e){}
+        }, 150);
+      };
+      setTimeout(()=>{ try{ n.close(); }catch(e){} }, 8000);
+      toast('测试通知已发送');
+    }catch(e){
+      toast('测试失败：' + e.message);
+    }
   }
 
   function switchTab(tab){
@@ -2510,7 +2585,7 @@ function startUI(){
   }
 
   /* ============================================================
-     音乐播放器（全局）
+     音乐播放器
      ============================================================ */
   const audioPlayer = { audio:null, src:'', name:'', playing:false, index:-1 };
   const miniPlayerEl = $('#miniPlayer');
@@ -2563,13 +2638,11 @@ function startUI(){
     const s = S.playlist[index];
     if(!s){ toast('歌曲不存在'); return; }
 
-    /* 同一首：切暂停/继续 */
     if(audioPlayer.index === index && audioPlayer.audio){
       togglePlay();
       return;
     }
 
-    /* 换歌：先停当前 */
     if(audioPlayer.audio){
       try{ audioPlayer.audio.pause(); }catch(e){}
     }
@@ -2596,7 +2669,6 @@ function startUI(){
       audioPlayer.playing = true;
       updateMiniPlayer();
       toast('▶ 正在播放：' + s.name);
-      /* 给 TA 发一条 */
       pushMsg({ id:uid(), from:'me', type:'text', text:`🎧 和你一起听：${s.name}`, ts:Date.now() }, true);
       setTimeout(()=>{
         pushMsg({ id:uid(), from:'them', type:'text', text: rand(['好听。','这首我也喜欢。','嗯，在听。','陪着你听。']), ts:Date.now() }, true);
@@ -2611,7 +2683,6 @@ function startUI(){
   mpToggleEl.addEventListener('click', togglePlay);
   $('#mpClose').addEventListener('click', closePlayer);
 
-  /* 本地音频文件上传 */
   function pickAudioFiles(cb){
     const inp = document.createElement('input');
     inp.type = 'file';
@@ -2620,7 +2691,7 @@ function startUI(){
     inp.onchange = ()=>{
       const files = Array.from(inp.files || []);
       if(!files.length) return;
-      const MAX_SIZE = 15 * 1024 * 1024; /* 15MB */
+      const MAX_SIZE = 15 * 1024 * 1024;
       let finished = 0, added = 0, skipped = 0;
 
       function done(){
@@ -2656,7 +2727,6 @@ function startUI(){
     inp.click();
   }
 
-  /* 音乐面板 */
   function openMusic(){
     const c = curChar();
     openSheet('同步听歌', '<div id="musicRoot"></div>', body=>{
@@ -2709,7 +2779,6 @@ function startUI(){
       }
 
       function bind(){
-        /* 删除 */
         root.querySelectorAll('[data-del]').forEach(b=>{
           b.onclick = e=>{
             e.stopPropagation();
@@ -2722,7 +2791,6 @@ function startUI(){
           };
         });
 
-        /* 播放 */
         root.querySelectorAll('[data-mi]').forEach(el=>{
           el.onclick = ()=>{
             const i = parseInt(el.dataset.mi, 10);
@@ -2735,7 +2803,6 @@ function startUI(){
           };
         });
 
-        /* 添加链接 */
         root.querySelector('#mAdd').onclick = ()=>{
           const name = root.querySelector('#mName').value.trim();
           const src = root.querySelector('#mSrc').value.trim();
@@ -2744,12 +2811,10 @@ function startUI(){
           saveNow(); render(); toast('已添加');
         };
 
-        /* 本地音乐 */
         root.querySelector('#mPickLocal').onclick = ()=>{
           pickAudioFiles(()=>{ render(); });
         };
 
-        /* 导入 m3u */
         root.querySelector('#mFile').addEventListener('change', function(){
           const f = this.files[0]; if(!f) return;
           const r = new FileReader();
@@ -3176,6 +3241,7 @@ function startUI(){
       console.error('渲染消息失败:', e);
     }
 
+    /* ★ 后台通知 */
     if(m.from === 'them' && S.settings.notifications !== false && document.hidden){
       let preview = '';
       if(m.type === 'text') preview = m.text;
@@ -4639,10 +4705,15 @@ function startUI(){
     let bubbleLabel = '自定义';
     if(appearance.bubbleMode === 'css') bubbleLabel = 'CSS 模式';
     else if(appearance.bubblePreset && BUBBLE_PRESETS[appearance.bubblePreset]) bubbleLabel = BUBBLE_PRESETS[appearance.bubblePreset].name;
+
+    /* 主动聊天的显示标签 */
+    const ac = (S.settings && S.settings.activeChat) ? S.settings.activeChat : { enabled: true, minMin: 30, maxMin: 180 };
+    const activeChatLabel = ac.enabled ? `每 ${ac.minMin}~${ac.maxMin} 分钟` : '已关闭';
+
     body.innerHTML = `
       <div class="list-row" data-act="font"><span class="ico">🔤</span><span class="tt">字体设置<div class="sub">当前：${esc(fontLabel)} · 字号 ${appearance.fontSize}px</div></span><span class="arrow">›</span></div>
       <div class="list-row" data-act="bubble"><span class="ico">🎨</span><span class="tt">气泡设置<div class="sub">当前：${esc(bubbleLabel)} · 可视化 / CSS 双模式</div></span><span class="arrow">›</span></div>
-      <div class="list-row" data-act="frequency"><span class="ico">⏱️</span><span class="tt">主动频率设置<div class="sub">朋友圈 · 日记 · 信 · 红包 · 来电</div></span><span class="arrow">›</span></div>
+      <div class="list-row" data-act="frequency"><span class="ico">⏱️</span><span class="tt">主动频率设置<div class="sub">主动聊天 · 朋友圈 · 日记 · 信 · 红包 · 来电</div></span><span class="arrow">›</span></div>
       <div class="list-row" data-act="sound"><span class="ico">🔊</span><span class="tt">提示音<div class="sub">当前：${esc(c.sound)}</div></span><span class="arrow">›</span></div>
       <div class="list-row" data-act="cards"><span class="ico">🗂️</span><span class="tt">角色字卡管理<div class="sub">${c.name} 的素材库 · ${c.cards.length} 条 · ${c.customGroups.length} 个分组</div></span><span class="arrow">›</span></div>
       <div class="list-row" data-act="emojis"><span class="ico">😀</span><span class="tt">表情包管理<div class="sub">我的 ${c.systemEmojis.length + c.stickers.length} · TA 的 ${c.theirEmojis.length}</div></span><span class="arrow">›</span></div>
@@ -4652,12 +4723,20 @@ function startUI(){
       <div class="list-row" data-act="reset"><span class="ico">♻️</span><span class="tt" style="color:#C88A8A">重置全部数据</span><span class="arrow">›</span></div>
       <div class="notif-card" style="margin-top:20px">
         <div class="t">🔔 后台消息通知</div>
-        <div class="d">${notifGranted ? '已授权。切到后台时，TA 的消息、朋友圈、日记、信、红包、来电都会弹通知。' : '未授权。点击下方按钮开启。'}</div>
-        ${!notifGranted ? '<button class="btn primary sm" id="notifAsk" style="margin-top:14px">开启通知权限</button>' : ''}
+        <div class="d">
+          ${notifGranted ? '已授权。切到后台时，TA 主动发消息、朋友圈、日记、信、红包、来电都会弹通知；点击通知可回到聊天界面。' : '未授权。点击下方按钮开启。'}
+          <br>当前主动聊天：<b style="color:var(--star-violet)">${esc(activeChatLabel)}</b>
+        </div>
+        <div class="btn-row" style="margin-top:14px">
+          ${!notifGranted ? '<button class="btn primary sm" id="notifAsk" style="flex:1">开启通知权限</button>' : ''}
+          ${notifGranted ? '<button class="btn sm" id="notifTest" style="flex:1">测试通知</button>' : ''}
+        </div>
       </div>`;
     body.querySelectorAll('[data-act]').forEach(el => el.onclick = ()=> settingsAction(el.dataset.act));
     const nb = body.querySelector('#notifAsk');
     if(nb) nb.onclick = ()=>{ requestNotifPermission(); setTimeout(()=>RENDERERS.settings(), 600); };
+    const tb = body.querySelector('#notifTest');
+    if(tb) tb.onclick = ()=> testNotification();
   };
 
   function settingsAction(act){
@@ -4680,7 +4759,7 @@ function startUI(){
     S.settings = mergeFreqSettings(S.settings);
     const c = curChar();
     const s = S.settings;
-    const rm = s.replyMail, mp = s.momentsPost, dp = s.diaryPost, lp = s.letterPost, rp = s.redpacketPost, cp = s.callPost;
+    const ac = s.activeChat, rm = s.replyMail, mp = s.momentsPost, dp = s.diaryPost, lp = s.letterPost, rp = s.redpacketPost, cp = s.callPost;
     const minSec = Math.round((c.minReply || 5000) / 1000);
     const maxSec = Math.round((c.maxReply || 120000) / 1000);
 
@@ -4700,10 +4779,24 @@ function startUI(){
     openSheet('主动频率设置', `
       <div class="imp-info">
         💡 所有内容都从字卡随机抽取拼凑：<br>
-        · 朋友圈 2~3 句 · 日记 5~6 句 · 信 5~6 句<br>
-        · 红包金额随机（50~10001）· 点击红包可选择领取或退回<br>
+        · 主动聊天 1~2 句 · 朋友圈 2~3 句 · 日记 5~6 句 · 信 5~6 句<br>
+        · 红包金额随机 · 点击红包可选择领取或退回<br>
         · 来电由你决定接听或挂断<br>
         · 首次打开有 10~30 分钟宽限期，不会立即触发
+      </div>
+
+      <div class="card-title" style="margin-bottom:12px">💌 TA 主动找你聊天</div>
+      <div class="muted" style="margin-bottom:14px">
+        达到时间后，TA 会主动从字卡里随机发 1~2 条消息。切到后台时会弹通知，点击可回到聊天界面。
+      </div>
+      ${sectionToggle('chatToggle', ac, '开启主动聊天')}
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+        <label style="font-size:13px;color:var(--sub);width:80px">最短</label>
+        <input class="input" id="acMin" type="number" value="${ac.minMin}" style="flex:1"><span style="font-size:12px;color:var(--dim)">分钟</span>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:26px">
+        <label style="font-size:13px;color:var(--sub);width:80px">最长</label>
+        <input class="input" id="acMax" type="number" value="${ac.maxMin}" style="flex:1"><span style="font-size:12px;color:var(--dim)">分钟</span>
       </div>
 
       <div class="card-title" style="margin-bottom:12px">💬 聊天回复时间</div>
@@ -4807,6 +4900,7 @@ function startUI(){
           el.firstElementChild.style.cssText = `position:absolute;top:3px;${obj.enabled?'right:3px':'left:3px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:.3s`;
         };
       }
+      bindToggle('chatToggle', ac);
       bindToggle('momentsToggle', mp);
       bindToggle('diaryToggle', dp);
       bindToggle('letterToggle', lp);
@@ -4814,6 +4908,10 @@ function startUI(){
       bindToggle('callToggle', cp);
 
       body.querySelector('#freqSave').onclick = ()=>{
+        /* ★ 主动聊天 */
+        ac.minMin = Math.max(1, parseInt(body.querySelector('#acMin').value,10)||30);
+        ac.maxMin = Math.max(ac.minMin, parseInt(body.querySelector('#acMax').value,10)||180);
+
         c.minReply = clamp(parseInt(chatMin.value,10), 5, 120) * 1000;
         c.maxReply = clamp(parseInt(chatMax.value,10), 5, 120) * 1000;
         if(c.maxReply < c.minReply) c.maxReply = c.minReply;
@@ -4832,10 +4930,12 @@ function startUI(){
         rp.maxAmount = Math.max(rp.minAmount, parseFloat(body.querySelector('#rpAmtMax').value)||10001);
         cp.minMin = Math.max(1, parseInt(body.querySelector('#cMin').value,10)||240);
         cp.maxMin = Math.max(cp.minMin, parseInt(body.querySelector('#cMax').value,10)||720);
+        S.settings.activeChat = ac;
         S.settings.replyMail = rm; S.settings.momentsPost = mp;
         S.settings.diaryPost = dp; S.settings.letterPost = lp;
         S.settings.redpacketPost = rp; S.settings.callPost = cp;
         saveNow(); closeSheet(); RENDERERS.settings();
+        scheduleProactiveChat();
         scheduleProactiveMoment(); scheduleProactiveDiary();
         scheduleProactiveLetter(); scheduleProactiveRedpacket(); scheduleProactiveCall();
         toast('已保存并重新排期');
@@ -6131,6 +6231,9 @@ function startUI(){
     });
   }
 
+  /* ============================================================
+     主动行为调度器
+     ============================================================ */
   const PROACTIVE_MIN_WAIT = 30 * 1000;
   function getLastTrigger(key){
     try{ return parseInt(localStorage.getItem('whisper-last-' + key) || '0', 10) || 0; }catch(e){ return 0; }
@@ -6148,6 +6251,40 @@ function startUI(){
     const waitMin = Math.max(0, minMs - since);
     const randomPart = Math.random() * (maxMs - minMs);
     return Math.max(firstDelay || PROACTIVE_MIN_WAIT, waitMin + randomPart);
+  }
+
+  /* ★ 主动聊天（TA 主动找用户） */
+  let proactiveChatTimer = null;
+  function scheduleProactiveChat(){
+    clearTimeout(proactiveChatTimer);
+    const p = S.settings.activeChat;
+    if(!p || !p.enabled) return;
+    const delay = calcDelay('activeChat', p.minMin || 30, p.maxMin || 180, 60000);
+    proactiveChatTimer = setTimeout(()=>{
+      setLastTrigger('activeChat');
+      doProactiveChat();
+      scheduleProactiveChat();
+    }, delay);
+  }
+  function doProactiveChat(){
+    try{
+      const c = curChar();
+      const cards = (c.cards || []).filter(x => x && x.text);
+      if(!cards.length) return;
+      /* 1~2 条，35% 概率两条 */
+      const count = Math.random() < 0.35 ? 2 : 1;
+      const usedTexts = new Set();
+      const now = Date.now();
+      for(let i = 0; i < count; i++){
+        const pool = cards.filter(x => !usedTexts.has(x.text));
+        if(!pool.length) break;
+        const card = rand(pool);
+        usedTexts.add(card.text);
+        const m = { id: uid(), from: 'them', type: 'text', text: card.text, ts: now + i * 500 };
+        pushMsg(m, true);
+      }
+      playSound(c.sound);
+    }catch(e){ console.error('doProactiveChat 失败:', e); }
   }
 
   let proactiveMomentTimer = null;
@@ -6286,6 +6423,8 @@ function startUI(){
   autoResize();
   sendBtn.disabled = true;
 
+  /* ★ 启动所有主动行为调度器 */
+  scheduleProactiveChat();
   scheduleProactiveMoment();
   scheduleProactiveDiary();
   scheduleProactiveLetter();
